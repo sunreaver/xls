@@ -3,9 +3,12 @@ package xls
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"unicode/utf16"
+
 	"golang.org/x/text/encoding/charmap"
 )
 
@@ -28,6 +31,27 @@ type WorkBook struct {
 	dateMode       uint16
 }
 
+func MakeBytes(size int) []byte {
+	if size > 1024*1024*64 {
+		panic("byte size too larger")
+	}
+	return make([]byte, size)
+}
+
+func MakeStrings(size int) []string {
+	if size > 1024 {
+		panic("string size too larger")
+	}
+	return make([]string, size)
+}
+
+func MakeUint16(size int) []uint16 {
+	if size > 1024*1024*32 {
+		panic("uint16 size too larger")
+	}
+	return make([]uint16, size)
+}
+
 //read workbook from ole2 file
 func newWorkBookFromOle2(rs io.ReadSeeker) *WorkBook {
 	wb := new(WorkBook)
@@ -44,8 +68,11 @@ func (w *WorkBook) Parse(buf io.ReadSeeker) {
 	bof_pre := new(bof)
 	// buf := bytes.NewReader(bts)
 	offset := 0
+	var ms runtime.MemStats
 	for {
 		if err := binary.Read(buf, binary.LittleEndian, b); err == nil {
+			runtime.ReadMemStats(&ms)
+			fmt.Printf("%X %v %v\n", b.Id, ms.Alloc/1024/1024, b.Size)
 			bof_pre, b, offset = w.parseBof(buf, b, bof_pre, offset)
 		} else {
 			break
@@ -58,6 +85,7 @@ func (w *WorkBook) addXf(xf st_xf_data) {
 }
 
 func (w *WorkBook) addFont(font *FontInfo, buf io.ReadSeeker) {
+	fmt.Println(uint16(font.NameB))
 	name, _ := w.get_string(buf, uint16(font.NameB))
 	w.Fonts = append(w.Fonts, Font{Info: font, Name: name})
 }
@@ -72,7 +100,7 @@ func (w *WorkBook) addFormat(format *Format) {
 func (wb *WorkBook) parseBof(buf io.ReadSeeker, b *bof, pre *bof, offset_pre int) (after *bof, after_using *bof, offset int) {
 	after = b
 	after_using = pre
-	var bts = make([]byte, b.Size)
+	var bts = MakeBytes(int(b.Size))
 	binary.Read(buf, binary.LittleEndian, bts)
 	buf_item := bytes.NewReader(bts)
 	switch b.Id {
@@ -116,12 +144,13 @@ func (wb *WorkBook) parseBof(buf io.ReadSeeker, b *bof, pre *bof, offset_pre int
 	case 0xfc: // SST
 		info := new(SstInfo)
 		binary.Read(buf_item, binary.LittleEndian, info)
-		wb.sst = make([]string, info.Count)
+		wb.sst = MakeStrings(int(info.Count))
 		var size uint16
 		var i = 0
 		for ; i < int(info.Count); i++ {
 			var err error
 			if err = binary.Read(buf_item, binary.LittleEndian, &size); err == nil {
+				fmt.Println("FC size", size)
 				var str string
 				str, err = wb.get_string(buf_item, size)
 				wb.sst[i] = wb.sst[i] + str
@@ -148,27 +177,27 @@ func (wb *WorkBook) parseBof(buf io.ReadSeeker, b *bof, pre *bof, offset_pre int
 			wb.addXf(xf)
 		}
 	case 0x031: // FONT
-		f := new(FontInfo)
-		binary.Read(buf_item, binary.LittleEndian, f)
-		wb.addFont(f, buf_item)
+		// f := new(FontInfo)
+		// binary.Read(buf_item, binary.LittleEndian, f)
+		// wb.addFont(f, buf_item)
 	case 0x41E: //FORMAT
-		font := new(Format)
-		binary.Read(buf_item, binary.LittleEndian, &font.Head)
-		font.str, _ = wb.get_string(buf_item, font.Head.Size)
-		wb.addFormat(font)
+		// font := new(Format)
+		// binary.Read(buf_item, binary.LittleEndian, &font.Head)
+		// font.str, _ = wb.get_string(buf_item, font.Head.Size)
+		// wb.addFormat(font)
 	case 0x22: //DATEMODE
 		binary.Read(buf_item, binary.LittleEndian, &wb.dateMode)
 	}
 	return
 }
 func decodeWindows1251(enc []byte) string {
-    dec := charmap.Windows1251.NewDecoder()
-    out, _ := dec.Bytes(enc)
-    return string(out)
+	dec := charmap.Windows1251.NewDecoder()
+	out, _ := dec.Bytes(enc)
+	return string(out)
 }
 func (w *WorkBook) get_string(buf io.ReadSeeker, size uint16) (res string, err error) {
 	if w.Is5ver {
-		var bts = make([]byte, size)
+		var bts = MakeBytes(int(size))
 		_, err = buf.Read(bts)
 		res = decodeWindows1251(bts)
 		//res = string(bts)
@@ -190,7 +219,7 @@ func (w *WorkBook) get_string(buf io.ReadSeeker, size uint16) (res string, err e
 			w.continue_apsb = 0
 		}
 		if flag&0x1 != 0 {
-			var bts = make([]uint16, size)
+			var bts = MakeUint16(int(size))
 			var i = uint16(0)
 			for ; i < size && err == nil; i++ {
 				err = binary.Read(buf, binary.LittleEndian, &bts[i])
@@ -201,7 +230,7 @@ func (w *WorkBook) get_string(buf io.ReadSeeker, size uint16) (res string, err e
 				w.continue_utf16 = size - i + 1
 			}
 		} else {
-			var bts = make([]byte, size)
+			var bts = MakeBytes(int(size))
 			var n int
 			n, err = buf.Read(bts)
 			if uint16(n) < size {
@@ -209,7 +238,7 @@ func (w *WorkBook) get_string(buf io.ReadSeeker, size uint16) (res string, err e
 				err = io.EOF
 			}
 
-			var bts1 = make([]uint16, n)
+			var bts1 = MakeUint16(n)
 			for k, v := range bts[:n] {
 				bts1[k] = uint16(v)
 			}
@@ -217,25 +246,28 @@ func (w *WorkBook) get_string(buf io.ReadSeeker, size uint16) (res string, err e
 			res = string(runes)
 		}
 		if richtext_num > 0 {
-			var bts []byte
+			// var bts []byte
 			var seek_size int64
 			if w.Is5ver {
 				seek_size = int64(2 * richtext_num)
 			} else {
 				seek_size = int64(4 * richtext_num)
 			}
-			bts = make([]byte, seek_size)
-			err = binary.Read(buf, binary.LittleEndian, bts)
+			if seek_size > 1024*1024*64 {
+				panic(fmt.Sprintf("too larger seek_size: %v", phonetic_size))
+			}
+			_, err = buf.Seek(int64(seek_size), io.SeekCurrent)
 			if err == io.EOF {
-				w.continue_rich = richtext_num
+				w.continue_rich = uint16(seek_size)
 			}
 
 			// err = binary.Read(buf, binary.LittleEndian, bts)
 		}
 		if phonetic_size > 0 {
-			var bts []byte
-			bts = make([]byte, phonetic_size)
-			err = binary.Read(buf, binary.LittleEndian, bts)
+			if phonetic_size > 1024*1024*64 {
+				panic(fmt.Sprintf("too larger phonetic_size: %v", phonetic_size))
+			}
+			_, err = buf.Seek(int64(phonetic_size), io.SeekCurrent)
 			if err == io.EOF {
 				w.continue_apsb = phonetic_size
 			}
@@ -289,11 +321,11 @@ func (w *WorkBook) ReadAllCells(max int) (res [][]string) {
 				}
 				temp := make([][]string, leng)
 				for k, row := range sheet.rows {
-					data := make([]string, 0)
+					data := MakeStrings(0)
 					if len(row.cols) > 0 {
 						for _, col := range row.cols {
 							if uint16(len(data)) <= col.LastCol() {
-								data = append(data, make([]string, col.LastCol()-uint16(len(data))+1)...)
+								data = append(data, MakeStrings(int(col.LastCol()-uint16(len(data))+1))...)
 							}
 							str := col.String(w)
 
